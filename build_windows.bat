@@ -11,9 +11,21 @@ if %ERRORLEVEL%==0 (
     set "USE_UV=0"
 )
 
-where py >nul 2>nul
-if not %ERRORLEVEL%==0 (
-    echo ERROR: Python launcher ^(py^) not found. Please install Python 3.13 first.
+set "PY_CMD="
+where python >nul 2>nul
+if %ERRORLEVEL%==0 (
+    set "PY_CMD=python"
+) else (
+    where py >nul 2>nul
+    if %ERRORLEVEL%==0 (
+        set "PY_CMD=py"
+    )
+)
+
+if "!USE_UV!"=="0" if "!PY_CMD!"=="" (
+    echo ERROR: Neither uv nor python/py found.
+    echo Please activate your conda env first, for example:
+    echo   conda activate snackstock
     exit /b 1
 )
 
@@ -36,18 +48,18 @@ if "!USE_UV!"=="1" (
         exit /b 1
     )
 ) else (
-    call py -m pip install -r requirements.txt
+    call !PY_CMD! -m pip install -r requirements.txt
     if not %ERRORLEVEL%==0 (
         echo ERROR: pip install requirements failed.
         exit /b 1
     )
-    call py -m pip install pyinstaller
+    call !PY_CMD! -m pip install pyinstaller
     if not %ERRORLEVEL%==0 (
         echo ERROR: pip install pyinstaller failed.
         exit /b 1
     )
-    echo [4/5] Building with PyInstaller via py...
-    call py -m PyInstaller --noconfirm --clean --windowed --name SnackStock main.py
+    echo [4/5] Building with PyInstaller via !PY_CMD!...
+    call !PY_CMD! -m PyInstaller --noconfirm --clean --windowed --name SnackStock main.py
     if not %ERRORLEVEL%==0 (
         echo ERROR: PyInstaller build failed.
         exit /b 1
