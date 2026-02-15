@@ -2,9 +2,6 @@ import sys
 import os
 from pathlib import Path
 
-from src.gui.main_window import MainWindow
-
-
 def _configure_qt_runtime() -> None:
     """
     Ensure Qt runtime DLL path is visible when running from PyInstaller bundle.
@@ -40,6 +37,7 @@ def _configure_qt_runtime() -> None:
 def main() -> int:
     _configure_qt_runtime()
     from PyQt6.QtWidgets import QApplication
+    from src.gui.main_window import MainWindow
 
     app = QApplication(sys.argv)
     window = MainWindow()
