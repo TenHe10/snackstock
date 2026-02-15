@@ -67,8 +67,13 @@ if "!USE_UV!"=="1" (
         echo ERROR: PyQt6 is not available in uv environment.
         exit /b 1
     )
+    call uv run python -c "from PyQt6 import QtCore, QtGui, QtWidgets"
+    if not %ERRORLEVEL%==0 (
+        echo ERROR: PyQt6 is installed but QtWidgets import failed in uv environment.
+        exit /b 1
+    )
     echo [4/5] Building with PyInstaller via uv...
-    call uv run pyinstaller --noconfirm --clean --windowed --name SnackStock --collect-all PyQt6 --hidden-import PyQt6 main.py
+    call uv run pyinstaller --noconfirm --clean --windowed --name SnackStock --collect-all PyQt6 --hidden-import PyQt6 --hidden-import PyQt6.QtCore --hidden-import PyQt6.QtGui --hidden-import PyQt6.QtWidgets main.py
     if not %ERRORLEVEL%==0 (
         echo ERROR: PyInstaller build failed.
         exit /b 1
@@ -94,8 +99,13 @@ if "!USE_UV!"=="1" (
         echo ERROR: PyQt6 import failed in current environment.
         exit /b 1
     )
+    call !PY_CMD! -c "from PyQt6 import QtCore, QtGui, QtWidgets"
+    if not %ERRORLEVEL%==0 (
+        echo ERROR: PyQt6 is installed but QtWidgets import failed in current environment.
+        exit /b 1
+    )
     echo [4/5] Building with PyInstaller via !PY_CMD!...
-    call !PY_CMD! -m PyInstaller --noconfirm --clean --windowed --name SnackStock --collect-all PyQt6 --hidden-import PyQt6 main.py
+    call !PY_CMD! -m PyInstaller --noconfirm --clean --windowed --name SnackStock --collect-all PyQt6 --hidden-import PyQt6 --hidden-import PyQt6.QtCore --hidden-import PyQt6.QtGui --hidden-import PyQt6.QtWidgets main.py
     if not %ERRORLEVEL%==0 (
         echo ERROR: PyInstaller build failed.
         exit /b 1
