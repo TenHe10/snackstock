@@ -21,11 +21,23 @@ SnackStock 是一个面向零食门店的本地桌面库存管理系统（MVP）
 - PyQt6
 - SQLite
 
-## 运行方式
+## 开发与发布约定
+
+- 开发环境：macOS（写代码、提交代码）
+- 生产环境：Windows（拉取代码、打包、运行）
+- 当前阶段：暂不实现程序自动更新，采用手动发布
+
+## 开发运行方式（macOS）
 
 ```bash
 uv sync
 uv run python main.py
+```
+
+## Windows 打包（生产机）
+
+```bash
+build_windows.bat
 ```
 
 日报导出会在你选择的目录生成：`daily_report_YYYY-MM-DD.csv`。
