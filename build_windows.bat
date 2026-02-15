@@ -73,7 +73,7 @@ if "!USE_UV!"=="1" (
         exit /b 1
     )
     echo [4/5] Building with PyInstaller via uv...
-    call uv run pyinstaller --noconfirm --clean --windowed --name SnackStock --collect-all PyQt6 --hidden-import PyQt6 --hidden-import PyQt6.QtCore --hidden-import PyQt6.QtGui --hidden-import PyQt6.QtWidgets main.py
+    call uv run pyinstaller --noconfirm --clean --windowed --name SnackStock --runtime-hook hooks\pyi_rth_pyqt6_path.py --collect-all PyQt6 --hidden-import PyQt6 --hidden-import PyQt6.QtCore --hidden-import PyQt6.QtGui --hidden-import PyQt6.QtWidgets main.py
     if not %ERRORLEVEL%==0 (
         echo ERROR: PyInstaller build failed.
         exit /b 1
@@ -105,7 +105,7 @@ if "!USE_UV!"=="1" (
         exit /b 1
     )
     echo [4/5] Building with PyInstaller via !PY_CMD!...
-    call !PY_CMD! -m PyInstaller --noconfirm --clean --windowed --name SnackStock --collect-all PyQt6 --hidden-import PyQt6 --hidden-import PyQt6.QtCore --hidden-import PyQt6.QtGui --hidden-import PyQt6.QtWidgets main.py
+    call !PY_CMD! -m PyInstaller --noconfirm --clean --windowed --name SnackStock --runtime-hook hooks\pyi_rth_pyqt6_path.py --collect-all PyQt6 --hidden-import PyQt6 --hidden-import PyQt6.QtCore --hidden-import PyQt6.QtGui --hidden-import PyQt6.QtWidgets main.py
     if not %ERRORLEVEL%==0 (
         echo ERROR: PyInstaller build failed.
         exit /b 1
