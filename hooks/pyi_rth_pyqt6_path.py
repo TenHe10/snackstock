@@ -26,6 +26,11 @@ def _configure_pyqt6_runtime() -> None:
         exe_dir / "_internal" / "PyQt6" / "Qt",
     ]
 
+    # Clear possibly conflicting Qt env vars (e.g. inherited from conda).
+    os.environ.pop("QT_PLUGIN_PATH", None)
+    os.environ.pop("QT_QPA_PLATFORM_PLUGIN_PATH", None)
+    os.environ.pop("QML2_IMPORT_PATH", None)
+
     for qt_root in candidates:
         bin_dir = qt_root / "bin"
         plugins_dir = qt_root / "plugins"
@@ -33,9 +38,9 @@ def _configure_pyqt6_runtime() -> None:
 
         _add_dll_path(bin_dir)
         if plugins_dir.exists():
-            os.environ.setdefault("QT_PLUGIN_PATH", str(plugins_dir))
+            os.environ["QT_PLUGIN_PATH"] = str(plugins_dir)
         if platform_dir.exists():
-            os.environ.setdefault("QT_QPA_PLATFORM_PLUGIN_PATH", str(platform_dir))
+            os.environ["QT_QPA_PLATFORM_PLUGIN_PATH"] = str(platform_dir)
 
 
 _configure_pyqt6_runtime()
