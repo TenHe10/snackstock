@@ -274,7 +274,7 @@ class MainWindow(QMainWindow):
 
     def select_database_file(self) -> None:
         initial = str(self.db.db_path)
-        selected_path, _ = QFileDialog.getSaveFileName(
+        selected_path, _ = QFileDialog.getOpenFileName(
             self,
             "选择数据库文件",
             initial,
