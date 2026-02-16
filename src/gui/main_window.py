@@ -681,6 +681,7 @@ class MainWindow(QMainWindow):
 
         self._info("补录保存成功")
         self.refresh_customer_orders()
+        self.refresh_report_section()
 
     def _warn(self, msg: str) -> None:
         QMessageBox.warning(self, "提示", msg)
