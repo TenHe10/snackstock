@@ -132,6 +132,7 @@ class MainWindow(QMainWindow):
         self.customer_order_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.customer_order_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.customer_order_table.itemSelectionChanged.connect(self._on_customer_order_selected)
+        self.customer_order_table.cellClicked.connect(self._on_customer_order_cell_clicked)
         layout.addWidget(self.customer_order_table)
 
         edit_group = QGroupBox("交易补录")
@@ -632,7 +633,12 @@ class MainWindow(QMainWindow):
         indexes = self.customer_order_table.selectionModel().selectedRows()
         if not indexes:
             return
-        row_index = indexes[0].row()
+        self._load_customer_order_from_row(indexes[0].row())
+
+    def _on_customer_order_cell_clicked(self, row: int, _column: int) -> None:
+        self._load_customer_order_from_row(row)
+
+    def _load_customer_order_from_row(self, row_index: int) -> None:
         order_id_item = self.customer_order_table.item(row_index, 0)
         if not order_id_item:
             return
