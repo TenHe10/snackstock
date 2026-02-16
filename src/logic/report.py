@@ -1,6 +1,7 @@
 from datetime import date
 from pathlib import Path
 import csv
+from typing import Any
 
 from config import REPORTS_DIR
 from src.db_manager import InventoryDB
@@ -12,6 +13,10 @@ class ReportService:
 
     def daily_report(self, for_date: date | None = None) -> dict[str, float]:
         return self.db.get_daily_summary(for_date=for_date)
+
+    def outbound_transactions(self, for_date: date | None = None) -> list[dict[str, Any]]:
+        rows = self.db.get_daily_transactions(for_date=for_date)
+        return [row for row in rows if row["type"] == "销售"]
 
     def export_daily_report_csv(
         self,

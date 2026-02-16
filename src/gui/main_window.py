@@ -52,7 +52,6 @@ class MainWindow(QMainWindow):
         self._init_barcode_completer()
         self.switch_page(0)
         self.refresh_all()
-        self.show_startup_warning_popup()
 
     def _build_ui(self) -> None:
         root = QWidget()
@@ -204,8 +203,12 @@ class MainWindow(QMainWindow):
         row = QHBoxLayout()
         self.checkout_btn = QPushButton("结算")
         self.checkout_btn.clicked.connect(self.checkout_cart)
+        self.cart_total_label = QLabel("购物车总价: 0.00")
+        self.cart_total_label.setStyleSheet("font-size: 22px; font-weight: 700; color: #C62828;")
         self.summary_label = QLabel("营业额: 0.00  毛利润: 0.00")
         row.addWidget(self.checkout_btn)
+        row.addWidget(self.cart_total_label)
+        row.addStretch(1)
         row.addWidget(self.summary_label)
         layout.addLayout(row)
         return box
@@ -251,13 +254,24 @@ class MainWindow(QMainWindow):
         self.report_date = QDateEdit()
         self.report_date.setCalendarPopup(True)
         self.report_date.setDate(QDate.currentDate())
+        self.report_date.dateChanged.connect(self.refresh_report_section)
+        self.refresh_outbound_btn = QPushButton("查询当日出库记录")
+        self.refresh_outbound_btn.clicked.connect(self.refresh_report_section)
         self.export_btn = QPushButton("导出日报 CSV")
         self.export_btn.clicked.connect(self.export_daily_csv)
         report_row.addWidget(QLabel("报表日期"))
         report_row.addWidget(self.report_date)
+        report_row.addWidget(self.refresh_outbound_btn)
         report_row.addWidget(self.export_btn)
         report_row.addStretch(1)
         layout.addLayout(report_row)
+
+        self.outbound_records_table = QTableWidget(0, 6)
+        self.outbound_records_table.setHorizontalHeaderLabels(
+            ["时间", "条码", "商品", "数量", "单价", "小计"]
+        )
+        self.outbound_records_table.horizontalHeader().setStretchLastSection(True)
+        layout.addWidget(self.outbound_records_table)
 
         return box
 
@@ -394,6 +408,7 @@ class MainWindow(QMainWindow):
             self.cart.pop(barcode, None)
         else:
             self.cart[barcode] = quantity
+        self.update_cart_total()
 
     def _remove_cart_item(self, barcode: str) -> None:
         self.cart.pop(barcode, None)
@@ -416,7 +431,7 @@ class MainWindow(QMainWindow):
         self.refresh_inventory_table()
         self.refresh_cart_table()
         self.refresh_warnings()
-        self.refresh_daily_report()
+        self.refresh_report_section()
         self.refresh_barcode_completer()
 
     def refresh_inventory_table(self) -> None:
@@ -478,16 +493,48 @@ class MainWindow(QMainWindow):
                 self.cart_table.setCellWidget(r, 4, remove_btn)
         finally:
             self._updating_cart_table = False
+        self.update_cart_total()
+
+    def update_cart_total(self) -> None:
+        total = 0.0
+        for barcode, qty in self.cart.items():
+            product = self.db.get_product(barcode)
+            if not product:
+                continue
+            total += float(product["retail_price"]) * int(qty)
+        self.cart_total_label.setText(f"购物车总价: {total:.2f}")
 
     def refresh_warnings(self) -> None:
         _, _, lines = self._collect_warnings()
         self.warning_text.setText("\n".join(lines))
 
     def refresh_daily_report(self) -> None:
-        report = self.report.daily_report()
+        selected = self.report_date.date().toPyDate()
+        report = self.report.daily_report(for_date=selected)
         self.daily_label.setText(
-            f"日报: 营业额 {report['revenue']:.2f} / 进货额 {report['purchase_cost']:.2f} / 毛利润 {report['gross_profit']:.2f}"
+            f"日报({selected.isoformat()}): 营业额 {report['revenue']:.2f} / 进货额 {report['purchase_cost']:.2f} / 毛利润 {report['gross_profit']:.2f}"
         )
+
+    def refresh_report_section(self, *_args) -> None:
+        self.refresh_daily_report()
+        self.refresh_outbound_records()
+
+    def refresh_outbound_records(self) -> None:
+        selected = self.report_date.date().toPyDate()
+        rows = self.report.outbound_transactions(for_date=selected)
+
+        self.outbound_records_table.setRowCount(len(rows))
+        for r, row in enumerate(rows):
+            qty = -int(row["change_qty"])
+            unit_price = float(row["retail_price"])
+            subtotal = qty * unit_price
+
+            self.outbound_records_table.setItem(r, 0, QTableWidgetItem(str(row["timestamp"])))
+            self.outbound_records_table.setItem(r, 1, QTableWidgetItem(str(row["barcode"])))
+            self.outbound_records_table.setItem(r, 2, QTableWidgetItem(str(row["name"])))
+            self.outbound_records_table.setItem(r, 3, QTableWidgetItem(str(qty)))
+            self.outbound_records_table.setItem(r, 4, QTableWidgetItem(f"{unit_price:.2f}"))
+            self.outbound_records_table.setItem(r, 5, QTableWidgetItem(f"{subtotal:.2f}"))
 
     def _warn(self, msg: str) -> None:
         QMessageBox.warning(self, "提示", msg)
