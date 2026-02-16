@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from PyQt6.QtCore import QDate, Qt
 from PyQt6.QtWidgets import (
+    QCompleter,
     QDateEdit,
     QFileDialog,
     QFormLayout,
@@ -23,7 +26,7 @@ from PyQt6.QtWidgets import (
 )
 
 from config import EXPIRY_WARNING_DAYS
-from src.db_manager import InventoryDB, Product
+from src.db_manager import InventoryDB, Product, load_selected_db_path, save_selected_db_path
 from src.logic.inbound import InboundService
 from src.logic.outbound import OutboundService
 from src.logic.report import ReportService
@@ -32,15 +35,17 @@ from src.logic.report import ReportService
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.db = InventoryDB()
+        self.db = InventoryDB(load_selected_db_path())
         self.inbound = InboundService(self.db)
         self.outbound = OutboundService(self.db)
         self.report = ReportService(self.db)
         self.cart: dict[str, int] = {}
+        self._updating_cart_table = False
 
         self.setWindowTitle("SnackStock 库存管理")
-        self.resize(1100, 720)
+        self.resize(1180, 760)
         self._build_ui()
+        self._init_barcode_completer()
         self.switch_page(0)
         self.refresh_all()
         self.show_startup_warning_popup()
@@ -84,7 +89,7 @@ class MainWindow(QMainWindow):
     def _build_outbound_page(self) -> QWidget:
         page = QWidget()
         layout = QGridLayout(page)
-        layout.addWidget(self._build_stock_out_scan_box(), 0, 0)
+        layout.addWidget(self._build_stock_out_box(), 0, 0)
         layout.addWidget(self._build_cart_box(), 1, 0)
         layout.setRowStretch(1, 1)
         return page
@@ -103,7 +108,7 @@ class MainWindow(QMainWindow):
         if index == 0:
             self.inbound_scan_barcode.setFocus()
         elif index == 1:
-            self.outbound_scan_barcode.setFocus()
+            self.manual_barcode_input.setFocus()
         else:
             self.report_date.setFocus()
 
@@ -156,31 +161,38 @@ class MainWindow(QMainWindow):
         form.addRow(self.btn_stock_in)
         return box
 
-    def _build_stock_out_scan_box(self) -> QGroupBox:
-        box = QGroupBox("出库扫码")
+    def _build_stock_out_box(self) -> QGroupBox:
+        box = QGroupBox("出库录入")
         form = QFormLayout(box)
 
-        self.outbound_scan_barcode = QLineEdit()
-        self.outbound_scan_barcode.setPlaceholderText("扫码枪输入后按回车，自动加入购物车")
-        self.outbound_scan_barcode.returnPressed.connect(self.add_cart_once)
-        self.outbound_scan_qty = QSpinBox()
-        self.outbound_scan_qty.setRange(1, 999999)
-        self.outbound_scan_qty.setValue(1)
+        self.manual_barcode_input = QLineEdit()
+        self.manual_barcode_input.setPlaceholderText("手动输入条码，按前缀匹配候选")
+        self.manual_barcode_input.returnPressed.connect(self.add_manual_once)
+        self.manual_barcode_input.textEdited.connect(self._on_manual_barcode_edited)
 
-        self.btn_add_cart = QPushButton("加入购物车")
-        self.btn_add_cart.clicked.connect(self.add_cart_once)
+        self.manual_qty = QSpinBox()
+        self.manual_qty.setRange(1, 999999)
+        self.manual_qty.setValue(1)
 
-        form.addRow("条码", self.outbound_scan_barcode)
-        form.addRow("数量", self.outbound_scan_qty)
-        form.addRow(self.btn_add_cart)
+        self.btn_add_manual = QPushButton("手动加入购物车")
+        self.btn_add_manual.clicked.connect(self.add_manual_once)
+
+        self.scan_barcode_input = QLineEdit()
+        self.scan_barcode_input.setPlaceholderText("扫码枪输入后按回车，直接加入购物车(数量=1)")
+        self.scan_barcode_input.returnPressed.connect(self.add_scanned_once)
+
+        form.addRow("手动条码", self.manual_barcode_input)
+        form.addRow("手动数量", self.manual_qty)
+        form.addRow(self.btn_add_manual)
+        form.addRow(QLabel("扫码枪模式"), self.scan_barcode_input)
         return box
 
     def _build_cart_box(self) -> QGroupBox:
         box = QGroupBox("出库购物车")
         layout = QVBoxLayout(box)
 
-        self.cart_table = QTableWidget(0, 4)
-        self.cart_table.setHorizontalHeaderLabels(["条码", "名称", "数量", "单价"])
+        self.cart_table = QTableWidget(0, 5)
+        self.cart_table.setHorizontalHeaderLabels(["条码", "名称", "数量", "单价", "操作"])
         self.cart_table.horizontalHeader().setStretchLastSection(True)
         layout.addWidget(self.cart_table)
 
@@ -194,12 +206,31 @@ class MainWindow(QMainWindow):
         return box
 
     def _build_inventory_box(self) -> QGroupBox:
-        box = QGroupBox("库存与预警")
+        box = QGroupBox("库存与报表")
         layout = QVBoxLayout(box)
+
+        db_row = QHBoxLayout()
+        self.db_path_label = QLabel()
+        self.db_path_label.setWordWrap(True)
+        self.btn_select_db = QPushButton("选择数据库文件")
+        self.btn_select_db.clicked.connect(self.select_database_file)
+        db_row.addWidget(QLabel("当前数据库"))
+        db_row.addWidget(self.db_path_label, 1)
+        db_row.addWidget(self.btn_select_db)
+        layout.addLayout(db_row)
+
+        search_row = QHBoxLayout()
+        self.inventory_search = QLineEdit()
+        self.inventory_search.setPlaceholderText("搜索条码/名称/分类")
+        self.inventory_search.textChanged.connect(self._apply_inventory_filter)
+        search_row.addWidget(QLabel("搜索"))
+        search_row.addWidget(self.inventory_search, 1)
+        layout.addLayout(search_row)
 
         self.inventory_table = QTableWidget(0, 5)
         self.inventory_table.setHorizontalHeaderLabels(["条码", "名称", "分类", "库存", "安全库存"])
         self.inventory_table.horizontalHeader().setStretchLastSection(True)
+        self.inventory_table.setSortingEnabled(True)
         layout.addWidget(self.inventory_table)
 
         self.warning_text = QTextEdit()
@@ -222,7 +253,52 @@ class MainWindow(QMainWindow):
         report_row.addWidget(self.export_btn)
         report_row.addStretch(1)
         layout.addLayout(report_row)
+
         return box
+
+    def _init_barcode_completer(self) -> None:
+        self.barcode_completer = QCompleter([], self)
+        self.barcode_completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        self.barcode_completer.setFilterMode(Qt.MatchFlag.MatchStartsWith)
+        self.barcode_completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
+        self.manual_barcode_input.setCompleter(self.barcode_completer)
+
+    def refresh_barcode_completer(self) -> None:
+        self.barcode_completer.model().setStringList(self.db.list_product_barcodes())
+
+    def _on_manual_barcode_edited(self, text: str) -> None:
+        if not text:
+            return
+        self.barcode_completer.setCompletionPrefix(text)
+        self.barcode_completer.complete()
+
+    def select_database_file(self) -> None:
+        initial = str(self.db.db_path)
+        selected_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "选择数据库文件",
+            initial,
+            "SQLite DB (*.db)",
+        )
+        if not selected_path:
+            return
+
+        target = Path(selected_path)
+        try:
+            new_db = InventoryDB(target)
+        except Exception as exc:
+            self._warn(f"数据库切换失败: {exc}")
+            return
+
+        self.db = new_db
+        self.inbound = InboundService(self.db)
+        self.outbound = OutboundService(self.db)
+        self.report = ReportService(self.db)
+        self.cart.clear()
+        save_selected_db_path(target)
+
+        self.refresh_all()
+        self._info(f"已切换数据库: {target}")
 
     def save_product(self) -> None:
         barcode = self.product_barcode.text().strip()
@@ -266,14 +342,23 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             self._warn(str(exc))
             return
+
         self._info("入库成功")
         self.refresh_all()
 
-    def add_cart_once(self) -> None:
-        barcode = self.outbound_scan_barcode.text().strip()
+    def add_manual_once(self) -> None:
+        self._add_to_cart(self.manual_barcode_input.text().strip(), self.manual_qty.value())
+        self.manual_barcode_input.clear()
+
+    def add_scanned_once(self) -> None:
+        self._add_to_cart(self.scan_barcode_input.text().strip(), 1)
+        self.scan_barcode_input.clear()
+
+    def _add_to_cart(self, barcode: str, quantity: int) -> None:
         if not barcode:
             self._warn("请先扫码或输入条码")
             return
+
         product = self.db.get_product(barcode)
         if not product:
             self.switch_page(0)
@@ -281,9 +366,20 @@ class MainWindow(QMainWindow):
             self._warn("商品不存在，请先在入库页创建商品档案")
             return
 
-        self.cart[barcode] = self.cart.get(barcode, 0) + self.outbound_scan_qty.value()
+        self.cart[barcode] = self.cart.get(barcode, 0) + max(1, quantity)
         self.refresh_cart_table()
-        self.outbound_scan_barcode.clear()
+
+    def _on_cart_qty_changed(self, barcode: str, quantity: int) -> None:
+        if self._updating_cart_table:
+            return
+        if quantity <= 0:
+            self.cart.pop(barcode, None)
+        else:
+            self.cart[barcode] = quantity
+
+    def _remove_cart_item(self, barcode: str) -> None:
+        self.cart.pop(barcode, None)
+        self.refresh_cart_table()
 
     def checkout_cart(self) -> None:
         try:
@@ -291,21 +387,24 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             self._warn(str(exc))
             return
+
         self.cart.clear()
-        self.summary_label.setText(
-            f"营业额: {result['revenue']:.2f}  毛利润: {result['profit']:.2f}"
-        )
+        self.summary_label.setText(f"营业额: {result['revenue']:.2f}  毛利润: {result['profit']:.2f}")
         self._info("结算完成")
         self.refresh_all()
 
     def refresh_all(self) -> None:
+        self.db_path_label.setText(str(self.db.db_path))
         self.refresh_inventory_table()
         self.refresh_cart_table()
         self.refresh_warnings()
         self.refresh_daily_report()
+        self.refresh_barcode_completer()
 
     def refresh_inventory_table(self) -> None:
         rows = self.db.list_products_with_stock()
+
+        self.inventory_table.setSortingEnabled(False)
         self.inventory_table.setRowCount(len(rows))
         for r, row in enumerate(rows):
             self.inventory_table.setItem(r, 0, QTableWidgetItem(row["barcode"]))
@@ -313,19 +412,54 @@ class MainWindow(QMainWindow):
             self.inventory_table.setItem(r, 2, QTableWidgetItem(row["category"]))
             self.inventory_table.setItem(r, 3, QTableWidgetItem(str(row["current_stock"])))
             self.inventory_table.setItem(r, 4, QTableWidgetItem(str(row["min_stock"])))
+        self.inventory_table.setSortingEnabled(True)
+
+        self._apply_inventory_filter(self.inventory_search.text())
+
+    def _apply_inventory_filter(self, keyword: str) -> None:
+        normalized = keyword.strip().lower()
+        for r in range(self.inventory_table.rowCount()):
+            if not normalized:
+                self.inventory_table.setRowHidden(r, False)
+                continue
+
+            values = [
+                self.inventory_table.item(r, 0).text() if self.inventory_table.item(r, 0) else "",
+                self.inventory_table.item(r, 1).text() if self.inventory_table.item(r, 1) else "",
+                self.inventory_table.item(r, 2).text() if self.inventory_table.item(r, 2) else "",
+            ]
+            matched = any(normalized in value.lower() for value in values)
+            self.inventory_table.setRowHidden(r, not matched)
 
     def refresh_cart_table(self) -> None:
         barcodes = list(self.cart.keys())
-        self.cart_table.setRowCount(len(barcodes))
-        for r, barcode in enumerate(barcodes):
-            product = self.db.get_product(barcode)
-            name = product["name"] if product else "未知商品"
-            price = float(product["retail_price"]) if product else 0.0
-            qty = self.cart[barcode]
-            self.cart_table.setItem(r, 0, QTableWidgetItem(barcode))
-            self.cart_table.setItem(r, 1, QTableWidgetItem(name))
-            self.cart_table.setItem(r, 2, QTableWidgetItem(str(qty)))
-            self.cart_table.setItem(r, 3, QTableWidgetItem(f"{price:.2f}"))
+
+        self._updating_cart_table = True
+        try:
+            self.cart_table.setRowCount(len(barcodes))
+            for r, barcode in enumerate(barcodes):
+                product = self.db.get_product(barcode)
+                name = product["name"] if product else "未知商品"
+                price = float(product["retail_price"]) if product else 0.0
+                qty = int(self.cart[barcode])
+
+                self.cart_table.setItem(r, 0, QTableWidgetItem(barcode))
+                self.cart_table.setItem(r, 1, QTableWidgetItem(name))
+                self.cart_table.setItem(r, 3, QTableWidgetItem(f"{price:.2f}"))
+
+                qty_spin = QSpinBox()
+                qty_spin.setRange(1, 999999)
+                qty_spin.setValue(max(1, qty))
+                qty_spin.valueChanged.connect(
+                    lambda value, b=barcode: self._on_cart_qty_changed(b, value)
+                )
+                self.cart_table.setCellWidget(r, 2, qty_spin)
+
+                remove_btn = QPushButton("移除")
+                remove_btn.clicked.connect(lambda _, b=barcode: self._remove_cart_item(b))
+                self.cart_table.setCellWidget(r, 4, remove_btn)
+        finally:
+            self._updating_cart_table = False
 
     def refresh_warnings(self) -> None:
         _, _, lines = self._collect_warnings()
@@ -377,6 +511,7 @@ class MainWindow(QMainWindow):
         folder = QFileDialog.getExistingDirectory(self, "选择导出目录")
         if not folder:
             return
+
         try:
             path = self.report.export_daily_report_csv(
                 for_date=selected,
@@ -385,4 +520,5 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             self._warn(f"导出失败: {exc}")
             return
+
         self._info(f"导出成功: {path}")
