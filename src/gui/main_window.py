@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PyQt6.QtCore import QDate, Qt
+from PyQt6.QtCore import QDate, Qt, QTimer
 from PyQt6.QtWidgets import (
     QCompleter,
     QDateEdit,
@@ -41,6 +41,10 @@ class MainWindow(QMainWindow):
         self.report = ReportService(self.db)
         self.cart: dict[str, int] = {}
         self._updating_cart_table = False
+        self.scan_commit_timer = QTimer(self)
+        self.scan_commit_timer.setSingleShot(True)
+        self.scan_commit_timer.setInterval(120)
+        self.scan_commit_timer.timeout.connect(self._auto_commit_scanned_barcode)
 
         self.setWindowTitle("SnackStock 库存管理")
         self.resize(1180, 760)
@@ -180,6 +184,7 @@ class MainWindow(QMainWindow):
         self.scan_barcode_input = QLineEdit()
         self.scan_barcode_input.setPlaceholderText("扫码枪输入后按回车，直接加入购物车(数量=1)")
         self.scan_barcode_input.returnPressed.connect(self.add_scanned_once)
+        self.scan_barcode_input.textEdited.connect(self._on_scan_barcode_edited)
 
         form.addRow("手动条码", self.manual_barcode_input)
         form.addRow("手动数量", self.manual_qty)
@@ -353,6 +358,19 @@ class MainWindow(QMainWindow):
     def add_scanned_once(self) -> None:
         self._add_to_cart(self.scan_barcode_input.text().strip(), 1)
         self.scan_barcode_input.clear()
+
+    def _on_scan_barcode_edited(self, text: str) -> None:
+        if not text:
+            self.scan_commit_timer.stop()
+            return
+        # Barcode scanners usually input very fast; commit when input settles briefly.
+        self.scan_commit_timer.start()
+
+    def _auto_commit_scanned_barcode(self) -> None:
+        code = self.scan_barcode_input.text().strip()
+        if not code:
+            return
+        self.add_scanned_once()
 
     def _add_to_cart(self, barcode: str, quantity: int) -> None:
         if not barcode:
