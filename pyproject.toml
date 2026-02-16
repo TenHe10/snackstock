@@ -12,3 +12,9 @@ dependencies = [
 index = [
     { url = "https://mirrors.aliyun.com/pypi/simple/", default = true }
 ]
+
+[dependency-groups]
+dev = [
+    "pyinstaller>=6.19.0",
+    "pyinstaller-hooks-contrib>=2026.0",
+]
