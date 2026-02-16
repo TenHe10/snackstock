@@ -203,11 +203,17 @@ class MainWindow(QMainWindow):
         row = QHBoxLayout()
         self.checkout_btn = QPushButton("结算")
         self.checkout_btn.clicked.connect(self.checkout_cart)
-        self.cart_total_label = QLabel("购物车总价: 0.00")
+        self.cart_total_label = QLabel("应收总额: 0.00")
         self.cart_total_label.setStyleSheet("font-size: 22px; font-weight: 700; color: #C62828;")
+        self.received_label = QLabel("实收")
+        self.received_amount_input = QLineEdit()
+        self.received_amount_input.setPlaceholderText("留空=应收")
+        self.received_amount_input.setFixedWidth(120)
         self.summary_label = QLabel("营业额: 0.00  毛利润: 0.00")
         row.addWidget(self.checkout_btn)
         row.addWidget(self.cart_total_label)
+        row.addWidget(self.received_label)
+        row.addWidget(self.received_amount_input)
         row.addStretch(1)
         row.addWidget(self.summary_label)
         layout.addLayout(row)
@@ -415,14 +421,26 @@ class MainWindow(QMainWindow):
         self.refresh_cart_table()
 
     def checkout_cart(self) -> None:
+        received_text = self.received_amount_input.text().strip()
+        received_amount: float | None = None
+        if received_text:
+            try:
+                received_amount = float(received_text)
+            except ValueError:
+                self._warn("实收金额必须是数字")
+                return
+
         try:
-            result = self.outbound.checkout(self.cart)
+            result = self.outbound.checkout(self.cart, received_amount=received_amount)
         except Exception as exc:
             self._warn(str(exc))
             return
 
         self.cart.clear()
-        self.summary_label.setText(f"营业额: {result['revenue']:.2f}  毛利润: {result['profit']:.2f}")
+        self.received_amount_input.clear()
+        self.summary_label.setText(
+            f"应收: {result['total_due']:.2f}  实收: {result['total_received']:.2f}  抹零: {result['discount']:.2f}  毛利润: {result['profit']:.2f}"
+        )
         self._info("结算完成")
         self.refresh_all()
 
@@ -502,7 +520,7 @@ class MainWindow(QMainWindow):
             if not product:
                 continue
             total += float(product["retail_price"]) * int(qty)
-        self.cart_total_label.setText(f"购物车总价: {total:.2f}")
+        self.cart_total_label.setText(f"应收总额: {total:.2f}")
 
     def refresh_warnings(self) -> None:
         _, _, lines = self._collect_warnings()

@@ -52,6 +52,7 @@ class InventoryDB:
         DB_DIR.mkdir(parents=True, exist_ok=True)
 
         self._init_db()
+        self._ensure_sales_schema()
         self._ensure_stock_totals_backfilled()
         self._archive_closed_month_logs()
 
@@ -77,6 +78,43 @@ class InventoryDB:
         with self._transaction() as conn:
             schema_sql = self.schema_path.read_text(encoding="utf-8")
             conn.executescript(schema_sql)
+
+    def _ensure_sales_schema(self) -> None:
+        with self._transaction() as conn:
+            columns = {
+                str(row["name"])
+                for row in conn.execute("PRAGMA table_info(stock_logs)").fetchall()
+            }
+            if "sale_order_id" not in columns:
+                conn.execute("ALTER TABLE stock_logs ADD COLUMN sale_order_id INTEGER")
+
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS sales_orders (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    total_due REAL NOT NULL,
+                    total_received REAL NOT NULL,
+                    discount REAL NOT NULL DEFAULT 0,
+                    timestamp DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS sales_order_items (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    order_id INTEGER NOT NULL,
+                    barcode TEXT NOT NULL,
+                    quantity INTEGER NOT NULL,
+                    unit_retail_price REAL NOT NULL,
+                    unit_purchase_price REAL NOT NULL,
+                    FOREIGN KEY (order_id) REFERENCES sales_orders (id) ON DELETE CASCADE
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_sales_orders_timestamp ON sales_orders(timestamp)"
+            )
 
     def _ensure_stock_totals_backfilled(self) -> None:
         with self._transaction() as conn:
@@ -131,10 +169,19 @@ class InventoryDB:
                 name TEXT NOT NULL,
                 change_qty INTEGER NOT NULL,
                 purchase_price REAL NOT NULL,
-                retail_price REAL NOT NULL
+                retail_price REAL NOT NULL,
+                sale_order_id INTEGER
             )
             """
         )
+        archive_columns = {
+            str(row["name"])
+            for row in archive_conn.execute("PRAGMA table_info(archived_stock_logs)").fetchall()
+        }
+        if "sale_order_id" not in archive_columns:
+            archive_conn.execute(
+                "ALTER TABLE archived_stock_logs ADD COLUMN sale_order_id INTEGER"
+            )
 
     def _archive_closed_month_logs(self) -> None:
         current_month = date.today().strftime("%Y-%m")
@@ -161,7 +208,8 @@ class InventoryDB:
                         p.name,
                         l.change_qty,
                         p.purchase_price,
-                        p.retail_price
+                        p.retail_price,
+                        l.sale_order_id
                     FROM stock_logs l
                     JOIN products p ON p.barcode = l.barcode
                     WHERE SUBSTR(l.timestamp, 1, 7) = ?
@@ -179,8 +227,8 @@ class InventoryDB:
                     archive_conn.executemany(
                         """
                         INSERT OR IGNORE INTO archived_stock_logs
-                        (source_id, timestamp, type, barcode, name, change_qty, purchase_price, retail_price)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        (source_id, timestamp, type, barcode, name, change_qty, purchase_price, retail_price, sale_order_id)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         [
                             (
@@ -192,6 +240,7 @@ class InventoryDB:
                                 int(log["change_qty"]),
                                 float(log["purchase_price"]),
                                 float(log["retail_price"]),
+                                int(log["sale_order_id"]) if log["sale_order_id"] is not None else None,
                             )
                             for log in monthly_logs
                         ],
@@ -314,15 +363,21 @@ class InventoryDB:
                     (barcode, batch_no, expiry_date, quantity),
                 )
 
-    def stock_out(self, cart_items: Iterable[CartItem], stock_type: str = "销售") -> dict[str, float]:
+    def stock_out(
+        self,
+        cart_items: Iterable[CartItem],
+        stock_type: str = "销售",
+        received_amount: float | None = None,
+    ) -> dict[str, float]:
         items = [item for item in cart_items if item.quantity > 0]
         if not items:
             raise ValueError("cart is empty")
 
-        revenue = 0.0
+        total_due = 0.0
         cost = 0.0
 
         with self._transaction() as conn:
+            order_lines: list[tuple[str, int, float, float]] = []
             for item in items:
                 product = conn.execute(
                     "SELECT * FROM products WHERE barcode = ?",
@@ -339,12 +394,48 @@ class InventoryDB:
                 if stock < item.quantity:
                     raise ValueError(f"库存不足: {product['name']} (当前 {stock})")
 
+                unit_retail = float(product["retail_price"])
+                unit_purchase = float(product["purchase_price"])
+                total_due += unit_retail * item.quantity
+                cost += unit_purchase * item.quantity
+                order_lines.append((item.barcode, int(item.quantity), unit_retail, unit_purchase))
+
+            final_received = round(total_due if received_amount is None else float(received_amount), 2)
+            total_due = round(total_due, 2)
+            if final_received < 0:
+                raise ValueError("实收金额不能小于 0")
+            if final_received - total_due > 1e-6:
+                raise ValueError("实收金额不能大于应收金额")
+            discount = round(total_due - final_received, 2)
+
+            order_cursor = conn.execute(
+                """
+                INSERT INTO sales_orders (total_due, total_received, discount)
+                VALUES (?, ?, ?)
+                """,
+                (total_due, final_received, discount),
+            )
+            sale_order_id = int(order_cursor.lastrowid)
+
+            conn.executemany(
+                """
+                INSERT INTO sales_order_items
+                (order_id, barcode, quantity, unit_retail_price, unit_purchase_price)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                [
+                    (sale_order_id, barcode, quantity, unit_retail, unit_purchase)
+                    for barcode, quantity, unit_retail, unit_purchase in order_lines
+                ],
+            )
+
+            for barcode, quantity, _unit_retail, _unit_purchase in order_lines:
                 conn.execute(
                     """
-                    INSERT INTO stock_logs (barcode, change_qty, type)
-                    VALUES (?, ?, ?)
+                    INSERT INTO stock_logs (barcode, change_qty, type, sale_order_id)
+                    VALUES (?, ?, ?, ?)
                     """,
-                    (item.barcode, -item.quantity, stock_type),
+                    (barcode, -quantity, stock_type, sale_order_id),
                 )
                 conn.execute(
                     """
@@ -352,21 +443,21 @@ class InventoryDB:
                     VALUES (?, ?)
                     ON CONFLICT(barcode) DO UPDATE SET current_qty = current_qty + excluded.current_qty
                     """,
-                    (item.barcode, -item.quantity),
+                    (barcode, -quantity),
                 )
                 self._consume_expiry_batches(
                     conn=conn,
-                    barcode=item.barcode,
-                    quantity=item.quantity,
+                    barcode=barcode,
+                    quantity=quantity,
                 )
 
-                revenue += float(product["retail_price"]) * item.quantity
-                cost += float(product["purchase_price"]) * item.quantity
-
         return {
-            "revenue": round(revenue, 2),
+            "total_due": total_due,
+            "total_received": final_received,
+            "discount": discount,
+            "revenue": final_received,
             "cost": round(cost, 2),
-            "profit": round(revenue - cost, 2),
+            "profit": round(final_received - cost, 2),
         }
 
     def get_low_stock_products(self) -> list[sqlite3.Row]:
@@ -418,7 +509,8 @@ class InventoryDB:
                     p.name,
                     l.change_qty,
                     p.purchase_price,
-                    p.retail_price
+                    p.retail_price,
+                    l.sale_order_id
                 FROM stock_logs l
                 JOIN products p ON p.barcode = l.barcode
                 WHERE DATE(l.timestamp) = ?
@@ -437,6 +529,7 @@ class InventoryDB:
                 "change_qty": int(row["change_qty"]),
                 "purchase_price": float(row["purchase_price"]),
                 "retail_price": float(row["retail_price"]),
+                "sale_order_id": int(row["sale_order_id"]) if row["sale_order_id"] is not None else None,
             }
             for row in rows
         ]
@@ -461,7 +554,8 @@ class InventoryDB:
                     name,
                     change_qty,
                     purchase_price,
-                    retail_price
+                    retail_price,
+                    sale_order_id
                 FROM archived_stock_logs
                 WHERE DATE(timestamp) = ?
                 ORDER BY timestamp ASC, source_id ASC
@@ -481,6 +575,7 @@ class InventoryDB:
                 "change_qty": int(row["change_qty"]),
                 "purchase_price": float(row["purchase_price"]),
                 "retail_price": float(row["retail_price"]),
+                "sale_order_id": int(row["sale_order_id"]) if row["sale_order_id"] is not None else None,
             }
             for row in rows
         ]
@@ -493,20 +588,48 @@ class InventoryDB:
 
     def get_daily_summary(self, for_date: date | None = None) -> dict[str, float]:
         logs = self._load_day_logs(for_date=for_date)
+        day = (for_date or date.today()).isoformat()
 
-        revenue = 0.0
         purchase_cost = 0.0
-        gross_profit = 0.0
+        legacy_sales_revenue = 0.0
+        legacy_sales_cost = 0.0
 
         for row in logs:
             qty = int(row["change_qty"])
             purchase_price = float(row["purchase_price"])
             retail_price = float(row["retail_price"])
-            if row["type"] == "销售":
-                revenue += -qty * retail_price
-                gross_profit += -qty * (retail_price - purchase_price)
-            elif row["type"] == "采购":
+            if row["type"] == "采购":
                 purchase_cost += qty * purchase_price
+            elif row["type"] == "销售" and row.get("sale_order_id") is None:
+                # Backward compatibility for legacy sales before sales_orders existed.
+                legacy_sales_revenue += -qty * retail_price
+                legacy_sales_cost += -qty * purchase_price
+
+        with self._connect() as conn:
+            order_row = conn.execute(
+                """
+                SELECT COALESCE(SUM(total_received), 0) AS revenue
+                FROM sales_orders
+                WHERE DATE(timestamp) = ?
+                """,
+                (day,),
+            ).fetchone()
+            order_revenue = float(order_row["revenue"])
+
+            order_cost_row = conn.execute(
+                """
+                SELECT COALESCE(SUM(i.quantity * i.unit_purchase_price), 0) AS order_cost
+                FROM sales_orders o
+                JOIN sales_order_items i ON i.order_id = o.id
+                WHERE DATE(o.timestamp) = ?
+                """,
+                (day,),
+            ).fetchone()
+            order_sales_cost = float(order_cost_row["order_cost"])
+
+        revenue = order_revenue + legacy_sales_revenue
+        sales_cost = order_sales_cost + legacy_sales_cost
+        gross_profit = revenue - sales_cost
 
         return {
             "revenue": round(revenue, 2),
