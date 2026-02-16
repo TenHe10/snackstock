@@ -115,6 +115,37 @@ class InventoryDB:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_sales_orders_timestamp ON sales_orders(timestamp)"
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS customer_orders (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    sale_order_id INTEGER UNIQUE,
+                    customer TEXT,
+                    total_due REAL NOT NULL,
+                    total_received REAL,
+                    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (sale_order_id) REFERENCES sales_orders (id) ON DELETE SET NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS customer_order_items (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    customer_order_id INTEGER NOT NULL,
+                    barcode TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    quantity INTEGER NOT NULL,
+                    unit_retail_price REAL NOT NULL,
+                    line_due REAL NOT NULL,
+                    FOREIGN KEY (customer_order_id) REFERENCES customer_orders (id) ON DELETE CASCADE
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_customer_orders_created_at ON customer_orders(created_at)"
+            )
 
     def _ensure_stock_totals_backfilled(self) -> None:
         with self._transaction() as conn:
@@ -377,7 +408,7 @@ class InventoryDB:
         cost = 0.0
 
         with self._transaction() as conn:
-            order_lines: list[tuple[str, int, float, float]] = []
+            order_lines: list[tuple[str, str, int, float, float]] = []
             for item in items:
                 product = conn.execute(
                     "SELECT * FROM products WHERE barcode = ?",
@@ -398,7 +429,9 @@ class InventoryDB:
                 unit_purchase = float(product["purchase_price"])
                 total_due += unit_retail * item.quantity
                 cost += unit_purchase * item.quantity
-                order_lines.append((item.barcode, int(item.quantity), unit_retail, unit_purchase))
+                order_lines.append(
+                    (item.barcode, str(product["name"]), int(item.quantity), unit_retail, unit_purchase)
+                )
 
             final_received = round(total_due if received_amount is None else float(received_amount), 2)
             total_due = round(total_due, 2)
@@ -417,6 +450,16 @@ class InventoryDB:
             )
             sale_order_id = int(order_cursor.lastrowid)
 
+            customer_received = None if received_amount is None else final_received
+            customer_order_cursor = conn.execute(
+                """
+                INSERT INTO customer_orders (sale_order_id, total_due, total_received)
+                VALUES (?, ?, ?)
+                """,
+                (sale_order_id, total_due, customer_received),
+            )
+            customer_order_id = int(customer_order_cursor.lastrowid)
+
             conn.executemany(
                 """
                 INSERT INTO sales_order_items
@@ -425,11 +468,29 @@ class InventoryDB:
                 """,
                 [
                     (sale_order_id, barcode, quantity, unit_retail, unit_purchase)
-                    for barcode, quantity, unit_retail, unit_purchase in order_lines
+                    for barcode, _name, quantity, unit_retail, unit_purchase in order_lines
+                ],
+            )
+            conn.executemany(
+                """
+                INSERT INTO customer_order_items
+                (customer_order_id, barcode, name, quantity, unit_retail_price, line_due)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        customer_order_id,
+                        barcode,
+                        name,
+                        quantity,
+                        unit_retail,
+                        round(quantity * unit_retail, 2),
+                    )
+                    for barcode, name, quantity, unit_retail, _unit_purchase in order_lines
                 ],
             )
 
-            for barcode, quantity, _unit_retail, _unit_purchase in order_lines:
+            for barcode, _name, quantity, _unit_retail, _unit_purchase in order_lines:
                 conn.execute(
                     """
                     INSERT INTO stock_logs (barcode, change_qty, type, sale_order_id)
@@ -666,6 +727,95 @@ class InventoryDB:
                 (consume, row["barcode"], row["batch_no"], row["expiry_date"]),
             )
             remaining -= consume
+
+    def list_customer_orders(self, for_date: date | None = None) -> list[sqlite3.Row]:
+        day = (for_date or date.today()).isoformat()
+        with self._connect() as conn:
+            return conn.execute(
+                """
+                SELECT
+                    id,
+                    sale_order_id,
+                    customer,
+                    total_due,
+                    total_received,
+                    created_at,
+                    updated_at
+                FROM customer_orders
+                WHERE DATE(created_at) = ?
+                ORDER BY created_at DESC, id DESC
+                """,
+                (day,),
+            ).fetchall()
+
+    def get_customer_order_items(self, customer_order_id: int) -> list[sqlite3.Row]:
+        with self._connect() as conn:
+            return conn.execute(
+                """
+                SELECT
+                    barcode,
+                    name,
+                    quantity,
+                    unit_retail_price,
+                    line_due
+                FROM customer_order_items
+                WHERE customer_order_id = ?
+                ORDER BY id ASC
+                """,
+                (customer_order_id,),
+            ).fetchall()
+
+    def update_customer_order(
+        self,
+        customer_order_id: int,
+        customer: str | None = None,
+        total_received: float | None = None,
+    ) -> None:
+        with self._transaction() as conn:
+            row = conn.execute(
+                """
+                SELECT id, sale_order_id, total_due
+                FROM customer_orders
+                WHERE id = ?
+                """,
+                (customer_order_id,),
+            ).fetchone()
+            if not row:
+                raise ValueError("订单不存在")
+
+            due = float(row["total_due"])
+            normalized_customer = customer.strip() if customer else None
+
+            normalized_received = None
+            if total_received is not None:
+                normalized_received = round(float(total_received), 2)
+                if normalized_received < 0:
+                    raise ValueError("实收金额不能小于 0")
+                if normalized_received - due > 1e-6:
+                    raise ValueError("实收金额不能大于应收金额")
+
+            conn.execute(
+                """
+                UPDATE customer_orders
+                SET customer = ?,
+                    total_received = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (normalized_customer, normalized_received, customer_order_id),
+            )
+
+            sale_order_id = row["sale_order_id"]
+            if sale_order_id is not None and normalized_received is not None:
+                discount = round(due - normalized_received, 2)
+                conn.execute(
+                    """
+                    UPDATE sales_orders
+                    SET total_received = ?, discount = ?
+                    WHERE id = ?
+                    """,
+                    (normalized_received, discount, int(sale_order_id)),
+                )
 
     def get_daily_transactions(self, for_date: date | None = None) -> list[dict[str, Any]]:
         return self._load_day_logs(for_date=for_date)

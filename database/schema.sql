@@ -51,5 +51,28 @@ CREATE TABLE IF NOT EXISTS sales_order_items (
     FOREIGN KEY (order_id) REFERENCES sales_orders (id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS customer_orders (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sale_order_id INTEGER UNIQUE,
+    customer TEXT,
+    total_due REAL NOT NULL,
+    total_received REAL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (sale_order_id) REFERENCES sales_orders (id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS customer_order_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    customer_order_id INTEGER NOT NULL,
+    barcode TEXT NOT NULL,
+    name TEXT NOT NULL,
+    quantity INTEGER NOT NULL,
+    unit_retail_price REAL NOT NULL,
+    line_due REAL NOT NULL,
+    FOREIGN KEY (customer_order_id) REFERENCES customer_orders (id) ON DELETE CASCADE
+);
+
 CREATE INDEX IF NOT EXISTS idx_stock_logs_timestamp ON stock_logs(timestamp);
 CREATE INDEX IF NOT EXISTS idx_sales_orders_timestamp ON sales_orders(timestamp);
+CREATE INDEX IF NOT EXISTS idx_customer_orders_created_at ON customer_orders(created_at);

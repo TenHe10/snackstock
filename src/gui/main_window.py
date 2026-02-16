@@ -40,6 +40,7 @@ class MainWindow(QMainWindow):
         self.outbound = OutboundService(self.db)
         self.report = ReportService(self.db)
         self.cart: dict[str, int] = {}
+        self.current_customer_order_id: int | None = None
         self._updating_cart_table = False
         self.scan_commit_timer = QTimer(self)
         self.scan_commit_timer.setSingleShot(True)
@@ -62,10 +63,12 @@ class MainWindow(QMainWindow):
         self.inbound_page_btn = QPushButton("入库")
         self.outbound_page_btn = QPushButton("出库")
         self.inventory_page_btn = QPushButton("库存与报表")
+        self.customer_orders_page_btn = QPushButton("交易补录")
         self.page_buttons = [
             self.inbound_page_btn,
             self.outbound_page_btn,
             self.inventory_page_btn,
+            self.customer_orders_page_btn,
         ]
         for index, btn in enumerate(self.page_buttons):
             btn.setCheckable(True)
@@ -78,6 +81,7 @@ class MainWindow(QMainWindow):
         self.page_stack.addWidget(self._build_inbound_page())
         self.page_stack.addWidget(self._build_outbound_page())
         self.page_stack.addWidget(self._build_inventory_page())
+        self.page_stack.addWidget(self._build_customer_orders_page())
         main_layout.addWidget(self.page_stack)
 
     def _build_inbound_page(self) -> QWidget:
@@ -103,6 +107,52 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._build_inventory_box())
         return page
 
+    def _build_customer_orders_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+
+        filter_row = QHBoxLayout()
+        self.customer_order_date = QDateEdit()
+        self.customer_order_date.setCalendarPopup(True)
+        self.customer_order_date.setDate(QDate.currentDate())
+        self.customer_order_date.dateChanged.connect(self.refresh_customer_orders)
+        self.customer_order_query_btn = QPushButton("查询订单")
+        self.customer_order_query_btn.clicked.connect(self.refresh_customer_orders)
+        filter_row.addWidget(QLabel("交易日期"))
+        filter_row.addWidget(self.customer_order_date)
+        filter_row.addWidget(self.customer_order_query_btn)
+        filter_row.addStretch(1)
+        layout.addLayout(filter_row)
+
+        self.customer_order_table = QTableWidget(0, 5)
+        self.customer_order_table.setHorizontalHeaderLabels(
+            ["订单ID", "时间", "客人", "应收", "实收"]
+        )
+        self.customer_order_table.horizontalHeader().setStretchLastSection(True)
+        self.customer_order_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.customer_order_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self.customer_order_table.itemSelectionChanged.connect(self._on_customer_order_selected)
+        layout.addWidget(self.customer_order_table)
+
+        edit_group = QGroupBox("交易补录")
+        edit_layout = QFormLayout(edit_group)
+        self.customer_order_id_label = QLabel("-")
+        self.customer_name_input = QLineEdit()
+        self.customer_received_input = QLineEdit()
+        self.customer_received_input.setPlaceholderText("可留空，示例：60")
+        self.customer_items_text = QTextEdit()
+        self.customer_items_text.setReadOnly(True)
+        self.customer_order_save_btn = QPushButton("保存补录信息")
+        self.customer_order_save_btn.clicked.connect(self.save_customer_order_supplement)
+        edit_layout.addRow("订单ID", self.customer_order_id_label)
+        edit_layout.addRow("客人", self.customer_name_input)
+        edit_layout.addRow("实收", self.customer_received_input)
+        edit_layout.addRow("商品明细", self.customer_items_text)
+        edit_layout.addRow(self.customer_order_save_btn)
+        layout.addWidget(edit_group)
+
+        return page
+
     def switch_page(self, index: int) -> None:
         self.page_stack.setCurrentIndex(index)
         for i, btn in enumerate(self.page_buttons):
@@ -112,8 +162,10 @@ class MainWindow(QMainWindow):
             self.inbound_scan_barcode.setFocus()
         elif index == 1:
             self.manual_barcode_input.setFocus()
-        else:
+        elif index == 2:
             self.report_date.setFocus()
+        else:
+            self.customer_order_date.setFocus()
 
     def _build_product_box(self) -> QGroupBox:
         box = QGroupBox("商品档案")
@@ -450,6 +502,7 @@ class MainWindow(QMainWindow):
         self.refresh_cart_table()
         self.refresh_warnings()
         self.refresh_report_section()
+        self.refresh_customer_orders()
         self.refresh_barcode_completer()
 
     def refresh_inventory_table(self) -> None:
@@ -553,6 +606,81 @@ class MainWindow(QMainWindow):
             self.outbound_records_table.setItem(r, 3, QTableWidgetItem(str(qty)))
             self.outbound_records_table.setItem(r, 4, QTableWidgetItem(f"{unit_price:.2f}"))
             self.outbound_records_table.setItem(r, 5, QTableWidgetItem(f"{subtotal:.2f}"))
+
+    def refresh_customer_orders(self, *_args) -> None:
+        selected = self.customer_order_date.date().toPyDate()
+        rows = self.report.customer_orders(for_date=selected)
+
+        self.current_customer_order_id = None
+        self.customer_order_id_label.setText("-")
+        self.customer_name_input.clear()
+        self.customer_received_input.clear()
+        self.customer_items_text.clear()
+
+        self.customer_order_table.setRowCount(len(rows))
+        for r, row in enumerate(rows):
+            self.customer_order_table.setItem(r, 0, QTableWidgetItem(str(row["id"])))
+            self.customer_order_table.setItem(r, 1, QTableWidgetItem(str(row["created_at"])))
+            self.customer_order_table.setItem(r, 2, QTableWidgetItem(str(row["customer"] or "")))
+            self.customer_order_table.setItem(r, 3, QTableWidgetItem(f"{float(row['total_due']):.2f}"))
+            received = row["total_received"]
+            self.customer_order_table.setItem(
+                r, 4, QTableWidgetItem("" if received is None else f"{float(received):.2f}")
+            )
+
+    def _on_customer_order_selected(self) -> None:
+        indexes = self.customer_order_table.selectionModel().selectedRows()
+        if not indexes:
+            return
+        row_index = indexes[0].row()
+        order_id_item = self.customer_order_table.item(row_index, 0)
+        if not order_id_item:
+            return
+
+        order_id = int(order_id_item.text())
+        self.current_customer_order_id = order_id
+        self.customer_order_id_label.setText(str(order_id))
+        self.customer_name_input.setText(
+            self.customer_order_table.item(row_index, 2).text() if self.customer_order_table.item(row_index, 2) else ""
+        )
+        self.customer_received_input.setText(
+            self.customer_order_table.item(row_index, 4).text() if self.customer_order_table.item(row_index, 4) else ""
+        )
+
+        items = self.report.customer_order_items(order_id)
+        lines = [
+            f"{item['name']}({item['barcode']}) x {item['quantity']} @ {float(item['unit_retail_price']):.2f} = {float(item['line_due']):.2f}"
+            for item in items
+        ]
+        self.customer_items_text.setText("\n".join(lines) if lines else "无商品明细")
+
+    def save_customer_order_supplement(self) -> None:
+        if self.current_customer_order_id is None:
+            self._warn("请先在上方选择一条订单记录")
+            return
+
+        customer_value = self.customer_name_input.text().strip() or None
+        received_value: float | None = None
+        received_text = self.customer_received_input.text().strip()
+        if received_text:
+            try:
+                received_value = float(received_text)
+            except ValueError:
+                self._warn("实收金额必须是数字")
+                return
+
+        try:
+            self.report.update_customer_order(
+                customer_order_id=self.current_customer_order_id,
+                customer=customer_value,
+                total_received=received_value,
+            )
+        except Exception as exc:
+            self._warn(str(exc))
+            return
+
+        self._info("补录保存成功")
+        self.refresh_customer_orders()
 
     def _warn(self, msg: str) -> None:
         QMessageBox.warning(self, "提示", msg)

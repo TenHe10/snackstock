@@ -18,6 +18,26 @@ class ReportService:
         rows = self.db.get_daily_transactions(for_date=for_date)
         return [row for row in rows if row["type"] == "销售"]
 
+    def customer_orders(self, for_date: date | None = None) -> list[dict[str, Any]]:
+        rows = self.db.list_customer_orders(for_date=for_date)
+        return [dict(row) for row in rows]
+
+    def customer_order_items(self, customer_order_id: int) -> list[dict[str, Any]]:
+        rows = self.db.get_customer_order_items(customer_order_id=customer_order_id)
+        return [dict(row) for row in rows]
+
+    def update_customer_order(
+        self,
+        customer_order_id: int,
+        customer: str | None = None,
+        total_received: float | None = None,
+    ) -> None:
+        self.db.update_customer_order(
+            customer_order_id=customer_order_id,
+            customer=customer,
+            total_received=total_received,
+        )
+
     def export_daily_report_csv(
         self,
         for_date: date | None = None,
