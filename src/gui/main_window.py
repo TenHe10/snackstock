@@ -4,6 +4,7 @@ from pathlib import Path
 
 from PyQt6.QtCore import QDate, Qt, QTimer
 from PyQt6.QtWidgets import (
+    QAbstractItemView,
     QCompleter,
     QDateEdit,
     QFileDialog,
@@ -129,6 +130,7 @@ class MainWindow(QMainWindow):
             ["订单ID", "时间", "客人", "应收", "实收"]
         )
         self.customer_order_table.horizontalHeader().setStretchLastSection(True)
+        self.customer_order_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.customer_order_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.customer_order_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.customer_order_table.itemSelectionChanged.connect(self._on_customer_order_selected)
@@ -297,6 +299,7 @@ class MainWindow(QMainWindow):
         self.inventory_table = QTableWidget(0, 5)
         self.inventory_table.setHorizontalHeaderLabels(["条码", "名称", "分类", "库存", "安全库存"])
         self.inventory_table.horizontalHeader().setStretchLastSection(True)
+        self.inventory_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.inventory_table.setSortingEnabled(True)
         layout.addWidget(self.inventory_table)
 
@@ -330,6 +333,7 @@ class MainWindow(QMainWindow):
             ["时间", "条码", "商品", "数量", "单价", "小计"]
         )
         self.outbound_records_table.horizontalHeader().setStretchLastSection(True)
+        self.outbound_records_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         layout.addWidget(self.outbound_records_table)
 
         return box
@@ -401,6 +405,7 @@ class MainWindow(QMainWindow):
             min_stock=self.product_min_stock.value(),
         )
         self.db.upsert_product(product)
+        self._reset_product_form()
         self._info("商品保存成功")
         self.refresh_all()
 
@@ -421,8 +426,25 @@ class MainWindow(QMainWindow):
             self._warn(str(exc))
             return
 
+        self._reset_stock_in_form()
         self._info("入库成功")
         self.refresh_all()
+
+    def _reset_product_form(self) -> None:
+        self.product_barcode.clear()
+        self.product_name.clear()
+        self.product_category.clear()
+        self.product_purchase.setText("0")
+        self.product_retail.setText("0")
+        self.product_min_stock.setValue(5)
+        self.product_barcode.setFocus()
+
+    def _reset_stock_in_form(self) -> None:
+        self.inbound_scan_barcode.clear()
+        self.inbound_scan_qty.setValue(1)
+        self.inbound_scan_batch.clear()
+        self.inbound_scan_expiry.setDate(QDate.currentDate())
+        self.inbound_scan_barcode.setFocus()
 
     def add_manual_once(self) -> None:
         self._add_to_cart(self.manual_barcode_input.text().strip(), self.manual_qty.value())
